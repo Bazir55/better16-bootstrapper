@@ -1,6 +1,6 @@
 [package]
 name = "better16-bootstrapper"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 description = "Installs, updates and launches the Better16 player. Runs on everything from Windows XP up."
 license = "MIT"
