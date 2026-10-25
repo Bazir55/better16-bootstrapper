@@ -75,7 +75,7 @@ impl Session {
             | INTERNET_FLAG_NO_UI;
         let h = unsafe { InternetOpenUrlW(self.0.0, wide(url).as_ptr(), core::ptr::null(), 0, flags, 0) };
         if h.is_null() {
-            return Err(Error::last_os(&format!("Could not connect to {}", config::host_of(url))));
+            return Err(connect_error(config::host_of(url), win::last_error()));
         }
         let handle = Internet(h);
 
@@ -170,6 +170,33 @@ impl Response {
     }
 }
 
+// DNS and connection failures get advice someone can act on; the system's
+// own text stays at the end for the log.
+fn connect_error(host: &str, code: u32) -> Error {
+    const NAME_NOT_RESOLVED: u32 = 12007;
+    const TIMEOUT: u32 = 12002;
+    const CANNOT_CONNECT: u32 = 12029;
+    const CONNECTION_ABORTED: u32 = 12030;
+    const CONNECTION_RESET: u32 = 12031;
+
+    let advice = match code {
+        // The site opening in a browser proves nothing here: browsers often
+        // resolve names over their own secure DNS, the launcher and the
+        // game use the system's.
+        NAME_NOT_RESOLVED => format!(
+            "Could not look up {host}. The DNS server this computer uses gave no address for it, \
+             which usually means the internet provider or a filter blocks the site. \
+             Setting DNS to 1.1.1.1 or 8.8.8.8, or turning on a VPN, should fix it."
+        ),
+        TIMEOUT | CANNOT_CONNECT | CONNECTION_ABORTED | CONNECTION_RESET => format!(
+            "Could not reach {host}. Check the internet connection, and whether a firewall \
+             or antivirus is blocking Better16Launcher.exe."
+        ),
+        _ => format!("Could not connect to {host}."),
+    };
+    Error::new(format!("{advice}\n\n{} (error {code})", win::error_text(code)))
+}
+
 fn query_number(h: Handle, what: u32) -> Option<u32> {
     let mut value = 0u32;
     let mut len = 4u32;
@@ -177,4 +204,17 @@ fn query_number(h: Handle, what: u32) -> Option<u32> {
         HttpQueryInfoW(h, what | HTTP_QUERY_FLAG_NUMBER, (&raw mut value).cast(), &mut len, core::ptr::null_mut())
     };
     (ok != 0).then_some(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unresolved_name_says_what_to_do() {
+        let msg = alloc::format!("{}", connect_error("setup.example.org", 12007));
+        assert!(msg.starts_with("Could not look up setup.example.org."));
+        assert!(msg.contains("1.1.1.1"));
+        assert!(msg.ends_with("(error 12007)"));
+    }
 }

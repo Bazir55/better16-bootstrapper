@@ -76,11 +76,10 @@ pub fn run() -> u32 {
     crate::log::open();
     let args = win::args();
     let o = options(&args);
-    log!(
-        "Better16 Launcher {} started, link: {}",
-        config::VERSION,
-        o.link.as_deref().map(redact).unwrap_or_else(|| String::from("none"))
-    );
+    match &o.link {
+        Some(l) => log!("Better16 Launcher {} started from a game link: {}", config::VERSION, redact(l)),
+        None => log!("Better16 Launcher {} started without a game link (install / repair)", config::VERSION),
+    }
 
     install::remove_stale_launcher();
 
