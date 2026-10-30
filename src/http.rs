@@ -190,7 +190,8 @@ fn connect_error(host: &str, code: u32) -> Error {
         ),
         TIMEOUT | CANNOT_CONNECT | CONNECTION_ABORTED | CONNECTION_RESET => format!(
             "Could not reach {host}. Check the internet connection, and whether a firewall \
-             or antivirus is blocking Better16Launcher.exe."
+             or antivirus is blocking {}.",
+            crate::config::product().launcher_exe
         ),
         _ => format!("Could not connect to {host}."),
     };

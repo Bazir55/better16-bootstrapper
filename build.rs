@@ -61,19 +61,24 @@ fn main() {
         println!("cargo:rustc-link-arg-bins=/DEBUG:NONE");
     }
 
-    let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("launcher.res");
-    fs::write(&out, resources()).unwrap();
-    println!("cargo:rustc-link-arg-bins={}", out.display());
+    for (bin, description) in [
+        ("Better16Launcher", "Better16 Launcher"),
+        ("Better16StudioLauncher", "Better16 Studio Launcher"),
+    ] {
+        let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join(format!("{bin}.res"));
+        fs::write(&out, resources(bin, description)).unwrap();
+        println!("cargo:rustc-link-arg-bin={bin}={}", out.display());
+    }
 }
 
-fn resources() -> Vec<u8> {
+fn resources(bin: &str, description: &str) -> Vec<u8> {
     let mut res = Vec::new();
 
     // Every .res file starts with an empty entry; cvtres and lld check for it.
     entry(&mut res, 0, 0, &[], 0);
 
-    entry(&mut res, RT_MANIFEST, 1, MANIFEST.as_bytes(), LANG_EN_US);
-    entry(&mut res, RT_VERSION, 1, &version_info(), LANG_EN_US);
+    entry(&mut res, RT_MANIFEST, 1, MANIFEST.replace("Better16 Launcher", description).as_bytes(), LANG_EN_US);
+    entry(&mut res, RT_VERSION, 1, &version_info(bin, description), LANG_EN_US);
 
     for &(id, file) in BITMAPS {
         let bmp = fs::read(format!("assets/{file}")).unwrap_or_else(|e| panic!("assets/{file}: {e}"));
@@ -82,9 +87,14 @@ fn resources() -> Vec<u8> {
         entry(&mut res, RT_BITMAP, id, &bmp[14..], LANG_EN_US);
     }
 
-    let icon = PathBuf::from("assets/better16.ico");
+    let studio_icon = PathBuf::from("assets/better16-studio.ico");
+    let icon = if bin == "Better16StudioLauncher" && studio_icon.exists() {
+        studio_icon
+    } else {
+        PathBuf::from("assets/better16.ico")
+    };
     if let Ok(ico) = fs::read(&icon) {
-        add_icon(&mut res, &ico);
+        add_icon(&mut res, &ico, &icon.display().to_string());
     }
 
     res
@@ -111,11 +121,11 @@ fn entry(res: &mut Vec<u8>, kind: u16, name: u16, data: &[u8], lang: u16) {
     align4(res);
 }
 
-fn add_icon(res: &mut Vec<u8>, ico: &[u8]) {
+fn add_icon(res: &mut Vec<u8>, ico: &[u8], name: &str) {
     let u16_at = |i: usize| u16::from_le_bytes([ico[i], ico[i + 1]]);
     let u32_at = |i: usize| u32::from_le_bytes([ico[i], ico[i + 1], ico[i + 2], ico[i + 3]]);
 
-    assert!(ico.len() >= 6 && u16_at(2) == 1, "assets/better16.ico is not an .ico file");
+    assert!(ico.len() >= 6 && u16_at(2) == 1, "{name} is not an .ico file");
     let count = u16_at(4) as usize;
 
     let mut group = Vec::new();
@@ -140,7 +150,7 @@ fn add_icon(res: &mut Vec<u8>, ico: &[u8]) {
     entry(res, RT_GROUP_ICON, 1, &group, LANG_EN_US);
 }
 
-fn version_info() -> Vec<u8> {
+fn version_info(bin: &str, description: &str) -> Vec<u8> {
     let version = env::var("CARGO_PKG_VERSION").unwrap();
     let mut parts = version.split('.').map(|p| p.parse::<u16>().unwrap_or(0));
     let (a, b, c) = (
@@ -168,12 +178,13 @@ fn version_info() -> Vec<u8> {
         fixed.extend(v.to_le_bytes());
     }
 
+    let original = format!("{bin}.exe");
     let strings = [
         ("CompanyName", "Better16"),
-        ("FileDescription", "Better16 Launcher"),
+        ("FileDescription", description),
         ("FileVersion", version.as_str()),
-        ("InternalName", "Better16Launcher"),
-        ("OriginalFilename", "Better16Launcher.exe"),
+        ("InternalName", bin),
+        ("OriginalFilename", original.as_str()),
         ("ProductName", "Better16"),
         ("ProductVersion", version.as_str()),
     ];

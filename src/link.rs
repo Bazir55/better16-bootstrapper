@@ -124,6 +124,64 @@ pub fn launch_from(params: &[(String, String)]) -> Result<Launch, &'static str> 
     Err("the link doesn't name a game")
 }
 
+pub fn studio_args_from(params: &[(String, String)]) -> Result<String, &'static str> {
+    let get = |key: &str| {
+        params
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+            .filter(|v| !v.is_empty())
+    };
+
+    let mut args = String::from(match get("launchmode") {
+        Some("build") => "-build",
+        Some("ide") | None => "-ide",
+        Some(_) => return Err("the link asks Studio for a mode it doesn't have"),
+    });
+
+    if let Some(ticket) = get("gameinfo") {
+        if !is_token(ticket) {
+            return Err("the login ticket in the link has unexpected characters");
+        }
+        args.push_str(&format!(" -url {}/Login/Negotiate.ashx -ticket {ticket}", config::BASE_URL));
+    }
+
+    if let Some(script) = get("script") {
+        let script = percent_decode(script);
+        // Studio runs what that URL hands back, so it has to be our own site.
+        if !is_site_url(&script) || !is_url_safe(&script) {
+            return Err("the link points at a different site");
+        }
+        args.push_str(" -script ");
+        args.push_str(&script);
+    }
+
+    if get("avatar").is_none_or(|v| v.eq_ignore_ascii_case("true")) {
+        args.push_str(" -avatar");
+    }
+
+    if let Some(id) = get("browsertrackerid").filter(|v| is_digits(v)) {
+        args.push_str(" -browserTrackerId ");
+        args.push_str(id);
+    }
+    Ok(args)
+}
+
+fn is_site_url(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return false;
+    }
+    let Some(slash) = rest.find('/') else {
+        return false;
+    };
+    let host = &rest[..slash];
+    let ours = config::host_of(config::BASE_URL);
+    host.eq_ignore_ascii_case(ours) || ours.strip_prefix("www.").is_some_and(|bare| host.eq_ignore_ascii_case(bare))
+}
+
 fn is_digits(s: &str) -> bool {
     !s.is_empty() && s.len() <= 20 && s.bytes().all(|b| b.is_ascii_digit())
 }
@@ -205,6 +263,36 @@ mod tests {
         assert!(launch("better16://placeId=1&key=x\" --evil").is_err());
         assert!(launch("better16://placeId=1&key=x&jobId=../../").is_err());
         assert!(launch("better16:1+launchmode:play+gameinfo:x+placelauncherurl:http%3A%2F%2Fevil.example%2F").is_err());
+    }
+
+    fn studio(uri: &str) -> Result<String, &'static str> {
+        studio_args_from(&parse(uri, "better16-studio").expect("scheme should match"))
+    }
+
+    #[test]
+    fn studio_edit_link() {
+        let script = format!("{}/Game/edit.ashx?placeID=5&upload=5", config::BASE_URL);
+        let encoded = script.replace(':', "%3A").replace('/', "%2F").replace('?', "%3F").replace('&', "%26").replace('=', "%3D");
+        let args = studio(&format!("better16-studio://launchmode=build&script={encoded}&gameinfo=abc123&avatar=true")).unwrap();
+        assert_eq!(
+            args,
+            format!("-build -url {}/Login/Negotiate.ashx -ticket abc123 -script {script} -avatar", config::BASE_URL)
+        );
+    }
+
+    #[test]
+    fn studio_plain_link() {
+        assert_eq!(studio("better16-studio://launchmode=ide").unwrap(), "-ide -avatar");
+        assert_eq!(studio("better16-studio://launchmode=ide&avatar=false").unwrap(), "-ide");
+    }
+
+    #[test]
+    fn studio_rejects_other_sites_and_injection() {
+        assert!(studio("better16-studio://launchmode=build&script=http%3A%2F%2Fevil.example%2Fx").is_err());
+        assert!(studio("better16-studio://launchmode=build&script=http%3A%2F%2Fwww.better16.wtf.evil.example%2Fx").is_err());
+        assert!(studio("better16-studio://launchmode=build&gameinfo=x%22%20-evil").is_ok_and(|a| !a.contains('"')));
+        assert!(studio("better16-studio://launchmode=build&gameinfo=x\" -evil").is_err());
+        assert!(studio("better16-studio://launchmode=-evil").is_err());
     }
 
     #[test]

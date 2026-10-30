@@ -1,4 +1,5 @@
-//! A plain text log in %TEMP%\Better16\launcher.log.
+//! A plain text log in %TEMP%\Better16\launcher.log (studio-launcher.log for
+//! Studio's launcher, so two of them running at once don't interleave).
 //!
 //! When something goes wrong on someone else's machine this file is usually
 //! all there is to go on, so every step that touches the network, the disk
@@ -16,7 +17,8 @@ static FILE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut()
 const MAX_SIZE: u64 = 512 * 1024;
 
 pub fn path() -> String {
-    format!("{}launcher.log", fs::temp_dir())
+    let prefix = if crate::config::is_studio() { "studio-" } else { "" };
+    format!("{}{prefix}launcher.log", fs::temp_dir())
 }
 
 pub fn open() {

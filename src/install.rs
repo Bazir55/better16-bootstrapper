@@ -1,20 +1,22 @@
-//! Getting the current client onto disk and registered.
+//! Getting the current build onto disk and registered.
 //!
 //! Layout, per user, no admin rights needed:
 //!
 //!     %LOCALAPPDATA%\Better16\
-//!         Better16Launcher.exe        the copy the URL scheme points at
-//!         Versions\version-xxxxxxxx\  one folder per client build
+//!         Better16Launcher.exe        the copy the player's URL scheme points at
+//!         Better16StudioLauncher.exe  and Studio's
+//!         Versions\version-xxxxxxxx\  one folder per build, player or Studio
 //!
-//! A client build is identified by the string the setup server returns
-//! from /version. Its files are /<version>-<package>.zip, plus
-//! /<version>-rbxManifest.txt listing every file with its MD5.
+//! A build is identified by the string the setup server returns from
+//! /version (the player) or /versionQTStudio (Studio). Its files are
+//! /<version>-<package>.zip, plus /<version>-rbxManifest.txt listing every
+//! file with its MD5.
 
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::config::{self, PACKAGES, SETUP_URL};
+use crate::config::{self, SETUP_URL, product};
 use crate::error::{Error, Result, bail};
 use crate::fs;
 use crate::http::Session;
@@ -26,15 +28,15 @@ use crate::ui;
 use crate::win;
 use crate::zip;
 
-/// Roughly what a full client takes unpacked, with some slack.
-const SPACE_NEEDED: u64 = 700 * 1024 * 1024;
+const PLACE_EXTENSION: &str = "Software\\Classes\\.rbxl";
+const PLACE_CLASS: &str = "Software\\Classes\\Roblox.Place";
 
 pub fn root() -> Result<String> {
     Ok(fs::join(&shell::folder(Folder::LocalAppData)?, config::PRODUCT))
 }
 
 pub fn launcher_path(root: &str) -> String {
-    fs::join(root, config::LAUNCHER_EXE)
+    fs::join(root, product().launcher_exe)
 }
 
 fn versions_dir(root: &str) -> String {
@@ -45,15 +47,23 @@ pub fn version_dir(root: &str, version: &str) -> String {
     fs::join(&versions_dir(root), version)
 }
 
+fn downloads_dir() -> String {
+    if config::is_studio() {
+        format!("{}studio-packages", fs::temp_dir())
+    } else {
+        format!("{}packages", fs::temp_dir())
+    }
+}
+
 /// The version the registry says is installed, if its files are there.
 pub fn installed_version(root: &str) -> Option<String> {
-    let version = reg::get_str(config::CLIENT_KEY, "version")?;
-    let exe = fs::join(&version_dir(root, &version), config::CLIENT_EXE);
+    let version = reg::get_str(product().reg_key, "version")?;
+    let exe = fs::join(&version_dir(root, &version), product().app_exe);
     fs::exists(&exe).then_some(version)
 }
 
 pub fn latest_version(http: &Session) -> Result<String> {
-    let version = http.get_string(&format!("{SETUP_URL}/version"))?;
+    let version = http.get_string(&format!("{SETUP_URL}/{}", product().version_file))?;
     let version = version.trim();
     // It becomes a folder name and part of every URL, so be picky.
     let valid = version.starts_with("version-")
@@ -68,11 +78,13 @@ pub fn latest_version(http: &Session) -> Result<String> {
 /// Downloads a newer launcher if the server has one. Returns the path of the
 /// downloaded exe; the caller runs it and quits.
 ///
-/// The server opts in by publishing <version>-Better16LauncherVersion.txt.
-/// Without it nothing happens, which is also what keeps this launcher from
-/// "updating" itself to the old C++ one that the same server hands out.
+/// The server opts in by publishing <version>-Better16LauncherVersion.txt
+/// (Better16StudioLauncherVersion.txt for Studio). Without it nothing
+/// happens, which is also what keeps this launcher from "updating" itself to
+/// the old C++ one that the same server hands out.
 pub fn find_update(http: &Session, version: &str) -> Result<Option<String>> {
-    let remote = match http.get_string(&format!("{SETUP_URL}/{version}-Better16LauncherVersion.txt")) {
+    let name = product().update_name;
+    let remote = match http.get_string(&format!("{SETUP_URL}/{version}-{name}Version.txt")) {
         Ok(v) => String::from(v.trim()),
         Err(Error::NotFound(_)) => return Ok(None),
         Err(e) => {
@@ -84,10 +96,10 @@ pub fn find_update(http: &Session, version: &str) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    ui::status("Getting the latest Better16...");
+    ui::status(&format!("Getting the latest {}...", product().name));
     log!("launcher {} -> {remote}", config::VERSION);
-    let path = format!("{}Better16Launcher-{remote}.exe", fs::temp_dir());
-    http.download(&format!("{SETUP_URL}/{version}-Better16Launcher.exe"), &path, &mut |_, _| ui::check_cancel())?;
+    let path = format!("{}{name}-{remote}.exe", fs::temp_dir());
+    http.download(&format!("{SETUP_URL}/{version}-{name}.exe"), &path, &mut |_, _| ui::check_cancel())?;
 
     let mut head = [0u8; 2];
     fs::File::open(&path)?.read_exact_at(0, &mut head)?;
@@ -117,9 +129,12 @@ pub fn ensure(http: &Session, version: &str, verify: bool) -> Result<String> {
 
     ui::disable_cancel();
     ui::busy();
-    ui::status("Configuring Better16...");
+    ui::status(&format!("Configuring {}...", product().name));
+    if config::is_studio() {
+        write_studio_settings(&dir)?;
+    }
     install_launcher(&root)?;
-    register(&root, version, previous.is_none())?;
+    register(&root, &dir, version, previous.is_none())?;
 
     if needs_install {
         remove_old_versions(&root, version);
@@ -128,12 +143,14 @@ pub fn ensure(http: &Session, version: &str, verify: bool) -> Result<String> {
 }
 
 fn install_packages(http: &Session, dir: &str, version: &str, updating: bool) -> Result<()> {
+    let p = product();
     fs::create_dir_all(dir)?;
     if let Some(free) = fs::free_space(dir) {
-        if free < SPACE_NEEDED {
+        if free < p.space_needed {
             bail!(
-                "Not enough disk space. Better16 needs about {} MB free, and there are {} MB.",
-                SPACE_NEEDED >> 20,
+                "Not enough disk space. {} needs about {} MB free, and there are {} MB.",
+                p.name,
+                p.space_needed >> 20,
                 free >> 20
             );
         }
@@ -141,15 +158,15 @@ fn install_packages(http: &Session, dir: &str, version: &str, updating: bool) ->
 
     // Zips wait in %TEMP% between download and unpack. The install folder
     // already has a Downloads folder belonging to the old launcher.
-    let downloads = format!("{}packages", fs::temp_dir());
+    let downloads = downloads_dir();
     fs::create_dir_all(&downloads)?;
 
     // One line for the whole thing, the way the launcher always put it; the
     // bar shows how far along it is.
-    ui::status(if updating { "Upgrading Better16 ..." } else { "Installing Better16 ..." });
+    ui::status(&format!("{} {} ...", if updating { "Upgrading" } else { "Installing" }, p.name));
 
-    let count = PACKAGES.len() as u64;
-    for (i, &(package, subdir)) in PACKAGES.iter().enumerate() {
+    let count = p.packages.len() as u64;
+    for (i, &(package, subdir)) in p.packages.iter().enumerate() {
         let i = i as u64;
         let zip_path = fs::join(&downloads, package);
 
@@ -177,7 +194,7 @@ fn install_packages(http: &Session, dir: &str, version: &str, updating: bool) ->
     // The client won't start without AppSettings.xml. RobloxApp.zip brings
     // its own, which is the one the manifest expects, so only fill the gap.
     let settings = fs::join(dir, "AppSettings.xml");
-    if !fs::exists(&settings) {
+    if !config::is_studio() && !fs::exists(&settings) {
         let xml = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<Settings>\r\n\t<ContentFolder>content</ContentFolder>\r\n\t<BaseUrl>{}/</BaseUrl>\r\n</Settings>\r\n",
             config::BASE_URL
@@ -187,6 +204,15 @@ fn install_packages(http: &Session, dir: &str, version: &str, updating: bool) ->
 
     let _ = fs::remove_dir_all(&downloads);
     Ok(())
+}
+
+/// The package's AppSettings.xml points at the build tree, so it is always written over.
+fn write_studio_settings(dir: &str) -> Result<()> {
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<Settings>\r\n\t<ContentFolder>content</ContentFolder>\r\n\t<BaseUrl>http://{}</BaseUrl>\r\n</Settings>\r\n",
+        config::host_of(config::BASE_URL)
+    );
+    fs::write(&fs::join(dir, "AppSettings.xml"), xml.as_bytes())
 }
 
 fn unpack(zip_path: &str, target: &str, progress: &mut dyn FnMut(u64, u64) -> Result<()>) -> Result<()> {
@@ -249,6 +275,9 @@ fn first_mismatch(dir: &str, manifest: &str, prefix: &str) -> Result<Option<Stri
         if !zip::is_safe_path(name) || !name.starts_with(prefix) {
             continue;
         }
+        if config::is_studio() && name.eq_ignore_ascii_case("AppSettings.xml") {
+            continue;
+        }
         let Ok(file) = fs::File::open(&fs::join(dir, name)) else {
             return Ok(Some(String::from(name)));
         };
@@ -294,11 +323,12 @@ pub fn remove_stale_launcher() {
     }
 }
 
-fn register(root: &str, version: &str, first_install: bool) -> Result<()> {
+fn register(root: &str, dir: &str, version: &str, first_install: bool) -> Result<()> {
+    let p = product();
     let launcher = launcher_path(root);
     let scheme = config::scheme();
 
-    let client = Key::create(config::CLIENT_KEY)?;
+    let client = Key::create(p.reg_key)?;
 
     // A scheme some earlier install registered under another name.
     if let Some(old) = client.get_str("protocol handler scheme") {
@@ -308,22 +338,25 @@ fn register(root: &str, version: &str, first_install: bool) -> Result<()> {
         }
     }
 
-    let class = Key::create_with_default(&format!("Software\\Classes\\{scheme}"), "URL: Better16 Protocol")?;
+    let class = Key::create_with_default(&format!("Software\\Classes\\{scheme}"), &format!("URL: {} Protocol", p.name))?;
     class.set_str("URL Protocol", "")?;
     Key::create_with_default(&format!("Software\\Classes\\{scheme}\\DefaultIcon"), &format!("\"{launcher}\",0"))?;
     Key::create_with_default(
         &format!("Software\\Classes\\{scheme}\\shell\\open\\command"),
         &format!("\"{launcher}\" \"%1\""),
     )?;
+    if config::is_studio() {
+        register_place_files(&launcher, dir)?;
+    }
     shell::notify_associations_changed();
 
     client.set_str("", &launcher)?;
     client.set_str("install host", config::host_of(SETUP_URL))?;
     client.set_str("protocol handler scheme", &scheme)?;
 
-    reg::delete_tree(config::LEGACY_UNINSTALL_KEY);
-    let uninstall = Key::create(config::UNINSTALL_KEY)?;
-    uninstall.set_str("DisplayName", config::SHORTCUT_NAME)?;
+    reg::delete_tree(p.legacy_uninstall_key);
+    let uninstall = Key::create(p.uninstall_key)?;
+    uninstall.set_str("DisplayName", p.shortcut_name)?;
     uninstall.set_str("DisplayIcon", &format!("{launcher},0"))?;
     uninstall.set_str("DisplayVersion", config::VERSION)?;
     uninstall.set_str("Comments", version)?;
@@ -351,30 +384,60 @@ fn register(root: &str, version: &str, first_install: bool) -> Result<()> {
     Ok(())
 }
 
+fn register_place_files(launcher: &str, dir: &str) -> Result<()> {
+    let ext = Key::create_with_default(PLACE_EXTENSION, "Roblox.Place")?;
+    drop(ext);
+    Key::create(&format!("{PLACE_EXTENSION}\\Roblox.Place\\ShellNew"))?;
+    Key::create_with_default(PLACE_CLASS, "Roblox Place")?;
+    Key::create_with_default(
+        &format!("{PLACE_CLASS}\\DefaultIcon"),
+        &format!("{},0", fs::join(dir, product().app_exe)),
+    )?;
+    Key::create_with_default(&format!("{PLACE_CLASS}\\shell\\Open"), "Open")?;
+    Key::create_with_default(
+        &format!("{PLACE_CLASS}\\shell\\Open\\command"),
+        &format!("\"{launcher}\" -ide \"%1\""),
+    )?;
+    Ok(())
+}
+
+fn unregister_place_files(launcher: &str) {
+    let ours = reg::get_str(&format!("{PLACE_CLASS}\\shell\\Open\\command"), "")
+        .is_some_and(|cmd| cmd.to_ascii_lowercase().contains(&launcher.to_ascii_lowercase()));
+    if ours {
+        reg::delete_tree(PLACE_EXTENSION);
+        reg::delete_tree(PLACE_CLASS);
+    }
+}
+
 fn create_shortcuts(launcher: &str, desktop: bool) -> Result<()> {
-    let lnk = format!("{}.lnk", config::SHORTCUT_NAME);
+    let p = product();
+    let lnk = format!("{}.lnk", p.shortcut_name);
     let programs = fs::join(&shell::folder(Folder::Programs)?, config::PRODUCT);
     fs::create_dir_all(&programs)?;
-    shell::create_shortcut(&fs::join(&programs, &lnk), launcher, "", "Play Better16")?;
+    shell::create_shortcut(&fs::join(&programs, &lnk), launcher, p.shortcut_args, p.shortcut_tip)?;
 
-    // Only on the first install: someone who deleted it meant it.
-    if desktop {
-        shell::create_shortcut(&fs::join(&shell::folder(Folder::Desktop)?, &lnk), launcher, "", "Play Better16")?;
+    let on_desktop = fs::join(&shell::folder(Folder::Desktop)?, &lnk);
+    if desktop || fs::exists(&on_desktop) {
+        shell::create_shortcut(&on_desktop, launcher, p.shortcut_args, p.shortcut_tip)?;
     }
     Ok(())
 }
 
-/// Whether a folder under Versions holds a player build. Studio installs
-/// into the same Versions folder, so anything else is left alone.
-fn is_player_build(dir: &str) -> bool {
-    fs::exists(&fs::join(dir, config::CLIENT_EXE)) && !fs::exists(&fs::join(dir, "RobloxStudioBeta.exe"))
+fn is_own_build(dir: &str) -> bool {
+    let studio = fs::exists(&fs::join(dir, config::STUDIO.app_exe));
+    if config::is_studio() {
+        studio
+    } else {
+        fs::exists(&fs::join(dir, config::PLAYER.app_exe)) && !studio
+    }
 }
 
 fn remove_old_versions(root: &str, keep: &str) {
     let versions = versions_dir(root);
     for e in fs::read_dir(&versions) {
         let path = fs::join(&versions, &e.name);
-        if !e.is_dir || e.is_link || e.name.eq_ignore_ascii_case(keep) || !is_player_build(&path) {
+        if !e.is_dir || e.is_link || e.name.eq_ignore_ascii_case(keep) || !is_own_build(&path) {
             continue;
         }
         // A client that's still running keeps its folder locked; it'll go
@@ -387,23 +450,26 @@ fn remove_old_versions(root: &str, keep: &str) {
 }
 
 pub fn uninstall() -> Result<()> {
+    let p = product();
     let root = root()?;
     ui::disable_cancel();
     ui::busy();
-    ui::status("Uninstalling Better16");
+    ui::status(&format!("Uninstalling {}", p.name));
 
-    if let Some(scheme) = reg::get_str(config::CLIENT_KEY, "protocol handler scheme") {
+    if let Some(scheme) = reg::get_str(p.reg_key, "protocol handler scheme") {
         if !scheme.is_empty() {
             reg::delete_tree(&format!("Software\\Classes\\{scheme}"));
         }
     }
     reg::delete_tree(&format!("Software\\Classes\\{}", config::scheme()));
-    reg::delete_tree(config::CLIENT_KEY);
-    reg::delete_tree(config::UNINSTALL_KEY);
+    if config::is_studio() {
+        unregister_place_files(&launcher_path(&root));
+    }
+    reg::delete_tree(p.reg_key);
+    reg::delete_tree(p.uninstall_key);
     shell::notify_associations_changed();
 
-    // Only our own shortcut: the Start menu folder is shared with Studio's.
-    let lnk = format!("{}.lnk", config::SHORTCUT_NAME);
+    let lnk = format!("{}.lnk", p.shortcut_name);
     if let Ok(desktop) = shell::folder(Folder::Desktop) {
         let _ = fs::remove_file(&fs::join(&desktop, &lnk));
     }
@@ -417,16 +483,16 @@ pub fn uninstall() -> Result<()> {
     let mut locked = false;
     for e in fs::read_dir(&versions) {
         let path = fs::join(&versions, &e.name);
-        if e.is_dir && !e.is_link && is_player_build(&path) {
+        if e.is_dir && !e.is_link && is_own_build(&path) {
             if let Err(err) = fs::remove_dir_all(&path) {
                 log!("{err}");
                 locked = true;
             }
         }
     }
-    let _ = fs::remove_dir_all(&format!("{}packages", fs::temp_dir()));
+    let _ = fs::remove_dir_all(&downloads_dir());
     if locked {
-        bail!("Some files could not be removed. Close Better16 if it's running and try again.");
+        bail!("Some files could not be removed. Close {} if it's running and try again.", p.name);
     }
 
     // This runs from a copy in %TEMP% (see app.rs), so the installed
@@ -439,7 +505,6 @@ pub fn uninstall() -> Result<()> {
         win::sleep(250);
     }
     let _ = fs::remove_file(&format!("{launcher}.old"));
-    // Only if empty: Studio and the client's settings may still live here.
     fs::remove_dir_if_empty(&versions);
     fs::remove_dir_if_empty(&root);
     log!("uninstalled");

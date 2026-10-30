@@ -324,7 +324,7 @@ fn new_state() -> State {
     };
     State {
         dpi,
-        text: wide("Connecting to Better16..."),
+        text: wide(&alloc::format!("Connecting to {}...", crate::config::product().name)),
         font: font("Tahoma", 11, dpi),
         title_font: font("Tahoma", 15, dpi),
         small_font: font("Tahoma", 10, dpi),
@@ -395,7 +395,7 @@ pub fn run(work: fn() -> Result<()>) -> u32 {
         let hwnd = CreateWindowExW(
             WS_EX_APPWINDOW,
             class_name.as_ptr(),
-            wide("Better16").as_ptr(),
+            wide(crate::config::product().name).as_ptr(),
             WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN | WS_SYSMENU | WS_MINIMIZEBOX,
             (GetSystemMetrics(SM_CXSCREEN) - w) / 2,
             (GetSystemMetrics(SM_CYSCREEN) - h) / 2,
@@ -706,7 +706,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: usize, lpara
             }
             MSG_FAILED => {
                 let text = Box::from_raw(lparam as *mut String);
-                win::message_box(hwnd, &text, "Better16", MB_ICONERROR);
+                win::message_box(hwnd, &text, crate::config::product().name, MB_ICONERROR);
                 finish(hwnd, EXIT_FAILED);
                 0
             }

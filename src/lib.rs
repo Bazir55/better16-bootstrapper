@@ -1,4 +1,5 @@
-//! Better16 Launcher: installs, updates and starts the Better16 player.
+//! Better16 Launcher: installs, updates and starts the Better16 player, or,
+//! built as Better16StudioLauncher.exe, Better16 Studio.
 //!
 //! No std, no CRT, every import picked by hand, so the same exe runs on
 //! Windows XP SP2 and on Windows 11. See `win.rs` for the import list and
@@ -32,6 +33,11 @@ mod win;
 mod zip;
 
 pub use app::run;
+
+pub fn run_studio() -> u32 {
+    config::select_studio();
+    app::run()
+}
 
 /// Ends the process. For main.rs, which has no other way in.
 pub fn exit(code: u32) -> ! {

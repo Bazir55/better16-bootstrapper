@@ -2,9 +2,9 @@
 
 The launcher for [Better16](https://www.better16.wtf). It downloads the player,
 keeps it up to date, registers the `better16://` links the site's Play button
-uses, and starts the game.
+uses, and starts the game. A second exe does the same for Better16 Studio.
 
-One small exe (most of its 600-odd KB is the window's pictures), no installer,
+One small exe each (most of the 600-odd KB is the window's pictures), no installer,
 no admin rights. Runs on Windows XP SP2 through
 Windows 11.
 
@@ -20,6 +20,25 @@ Everything goes into `%LOCALAPPDATA%\Better16`. Packages come from the setup
 server as `/<version>-<package>.zip`; the current version is whatever
 `/version` returns. A plain start also checks every file against
 `/<version>-rbxManifest.txt`. A log is written to `%TEMP%\Better16\launcher.log`.
+
+The launcher updates itself when `/<version>-Better16LauncherVersion.txt`
+names a version other than its own, from `/<version>-Better16Launcher.exe`.
+
+### Studio
+
+`Better16StudioLauncher.exe` is built from the same code and does the same for
+Better16 Studio:
+
+- with no arguments it installs or repairs Studio, then starts it;
+- `-ide [place.rbxl]`, which its shortcut and the `.rbxl` association pass,
+  updates if needed and starts Studio, opening the place;
+- `better16-studio://launchmode=build&script=...&gameinfo=...` (the site's Edit
+  buttons) signs Studio in with the ticket and opens the place the script names.
+
+Its build is whatever `/versionQTStudio` returns, it updates itself from
+`Better16StudioLauncher.exe` and `Better16StudioLauncherVersion.txt`, and it logs
+to `studio-launcher.log`. The player and Studio share the `Versions` folder and
+each leaves the other's builds alone.
 
 ## Why it looks the way it does
 
@@ -44,7 +63,7 @@ rustup target add i686-pc-windows-msvc
 cargo build --release
 ```
 
-The exe ends up in `target/i686-pc-windows-msvc/release/`. To point a build at
+Both exes end up in `target/i686-pc-windows-msvc/release/`. To point a build at
 another deployment:
 
 ```
@@ -57,7 +76,8 @@ The URL scheme and the other names are derived from those two.
 
 The window's pictures (logo and buttons, each with an `@2x` copy for
 high-DPI screens) are the `.bmp` files in `assets/` and get embedded at build
-time. If `assets/better16.ico` exists it becomes the program icon.
+time. If `assets/better16.ico` exists it becomes the program icon;
+`assets/better16-studio.ico` is the Studio launcher's.
 
 Tests: `cargo test --lib`. Add `-- --include-ignored` to also run the one that
 downloads real packages from the setup server.

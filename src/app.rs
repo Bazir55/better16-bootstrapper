@@ -9,11 +9,11 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::config;
+use crate::config::{self, product};
 use crate::error::{Error, Result};
 use crate::http::Session;
 use crate::install;
-use crate::link::{self, Launch};
+use crate::link;
 use crate::log::log;
 use crate::shell;
 use crate::ui;
@@ -31,6 +31,8 @@ struct Options {
     quiet: bool,
     no_self_update: bool,
     version: bool,
+    ide: bool,
+    file: Option<String>,
 }
 
 fn options(args: &[String]) -> Options {
@@ -42,11 +44,16 @@ fn options(args: &[String]) -> Options {
             o.link = Some(arg.clone());
             continue;
         }
+        if config::is_studio() && !arg.starts_with('-') && crate::fs::exists(arg) {
+            o.file = Some(arg.clone());
+            continue;
+        }
         match lower.trim_start_matches('-') {
             "uninstall" => o.uninstall = true,
             "quiet" | "q" => o.quiet = true,
             "no-self-update" => o.no_self_update = true,
             "version" => o.version = true,
+            "ide" if config::is_studio() => o.ide = true,
             // Old shortcuts pass things like -browser; nothing to do.
             _ => log!("ignoring argument {arg}"),
         }
@@ -62,7 +69,7 @@ fn redact(link: &str) -> String {
             out.push('&');
         }
         let lower = part.to_ascii_lowercase();
-        if lower.starts_with("key=") || lower.contains("gameinfo:") {
+        if lower.starts_with("key=") || lower.contains("gameinfo:") || lower.contains("gameinfo=") {
             out.push_str(&part[..part.find(['=', ':']).map_or(0, |p| p + 1)]);
             out.push_str("***");
         } else {
@@ -76,9 +83,10 @@ pub fn run() -> u32 {
     crate::log::open();
     let args = win::args();
     let o = options(&args);
+    let name = product().name;
     match &o.link {
-        Some(l) => log!("Better16 Launcher {} started from a game link: {}", config::VERSION, redact(l)),
-        None => log!("Better16 Launcher {} started without a game link (install / repair)", config::VERSION),
+        Some(l) => log!("{name} Launcher {} started from a link: {}", config::VERSION, redact(l)),
+        None => log!("{name} Launcher {} started without a link (install / repair)", config::VERSION),
     }
 
     install::remove_stale_launcher();
@@ -86,8 +94,8 @@ pub fn run() -> u32 {
     if o.version {
         win::message_box(
             core::ptr::null_mut(),
-            &format!("Better16 Launcher {}", config::VERSION),
-            "Better16",
+            &format!("{name} Launcher {}", config::VERSION),
+            name,
             MB_ICONINFORMATION,
         );
         return 0;
@@ -97,8 +105,8 @@ pub fn run() -> u32 {
         let ok = o.quiet
             || win::message_box(
                 core::ptr::null_mut(),
-                "Remove Better16 and everything it downloaded?",
-                "Better16",
+                &format!("Remove {name} and everything it downloaded?"),
+                name,
                 MB_YESNO,
             ) == IDYES;
         if !ok {
@@ -108,7 +116,7 @@ pub fn run() -> u32 {
         // copy in %TEMP%, the way most uninstallers do it.
         let me = win::current_exe();
         if install::is_installed_launcher(&me) {
-            let copy = format!("{}Better16Uninstall.exe", crate::fs::temp_dir());
+            let copy = format!("{}{}Uninstall.exe", crate::fs::temp_dir(), product().update_name);
             let cmd = format!("{} -uninstall -quiet", quote(&copy));
             let handed_off = crate::fs::copy(&me, &copy).and_then(|()| spawn(&copy, &cmd, None));
             match handed_off {
@@ -124,10 +132,11 @@ pub fn run() -> u32 {
     if let Some(l) = &o.link {
         if let Err(msg) = parse_link(l) {
             log!("bad link: {msg}");
+            let what = if config::is_studio() { "link" } else { "game link" };
             win::message_box(
                 core::ptr::null_mut(),
-                &format!("This game link can't be opened: {msg}."),
-                "Better16",
+                &format!("This {what} can't be opened: {msg}."),
+                name,
                 MB_ICONERROR,
             );
             return ui::EXIT_FAILED;
@@ -137,31 +146,48 @@ pub fn run() -> u32 {
     ui::run(work)
 }
 
-fn parse_link(uri: &str) -> core::result::Result<Launch, &'static str> {
+fn parse_link(uri: &str) -> core::result::Result<String, &'static str> {
     let params = link::parse(uri, &config::scheme()).ok_or("it isn't a Better16 link")?;
-    link::launch_from(&params)
+    if config::is_studio() {
+        link::studio_args_from(&params)
+    } else {
+        link::launch_from(&params).map(|l| l.client_args())
+    }
+}
+
+fn start_args(o: &Options) -> Option<String> {
+    if let Some(args) = o.link.as_deref().and_then(|l| parse_link(l).ok()) {
+        return Some(args);
+    }
+    if !config::is_studio() {
+        return None;
+    }
+    let mut args = String::from("-ide");
+    if let Some(file) = &o.file {
+        args.push_str(" -fileLocation ");
+        args.push_str(&quote(file));
+    }
+    Some(args)
 }
 
 fn work() -> Result<()> {
     let args = win::args();
     let o = options(&args);
-    let launch = o.link.as_deref().and_then(|l| parse_link(l).ok());
+    let start = start_args(&o);
 
     let _lock = single_instance()?;
     ui::busy();
-    ui::status("Connecting to Better16...");
+    ui::status(&format!("Connecting to {}...", product().name));
     let http = Session::new()?;
 
     let version = match install::latest_version(&http) {
         Ok(v) => v,
         Err(e) => {
-            // Offline or the server is down. If there's a client already,
-            // a game link can still try to use it.
             let root = install::root()?;
-            match (&launch, install::installed_version(&root)) {
-                (Some(l), Some(v)) => {
+            match (&start, install::installed_version(&root)) {
+                (Some(a), Some(v)) => {
                     log!("could not check for updates ({e}), starting {v} as is");
-                    return play(&install::version_dir(&root, &v), l);
+                    return play(&install::version_dir(&root, &v), a);
                 }
                 _ => return Err(e),
             }
@@ -185,10 +211,11 @@ fn work() -> Result<()> {
     let first_install = install::installed_version(&install::root()?).is_none();
 
     // A plain start is the "fix it" button, so that's when files get checked.
-    let dir = install::ensure(&http, &version, launch.is_none())?;
+    let plain = o.link.is_none() && !o.ide && o.file.is_none();
+    let dir = install::ensure(&http, &version, plain)?;
 
-    match &launch {
-        Some(l) => play(&dir, l),
+    match &start {
+        Some(a) => play(&dir, a),
         // Fresh install from the downloaded exe: say so and point at the
         // site's Play buttons. Otherwise just take them to the site.
         None if first_install => {
@@ -202,18 +229,20 @@ fn work() -> Result<()> {
     }
 }
 
-fn play(dir: &str, launch: &Launch) -> Result<()> {
+fn play(dir: &str, args: &str) -> Result<()> {
     ui::disable_cancel();
     ui::busy();
-    ui::status("Starting Better16...");
+    ui::status(&format!("Starting {}...", product().name));
 
-    let exe = crate::fs::join(dir, config::CLIENT_EXE);
-    let cmd = format!("{} {}", quote(&exe), launch.client_args());
+    let event = config::started_event_name();
+    let exe = crate::fs::join(dir, product().app_exe);
+    let mut cmd = format!("{} {args}", quote(&exe));
+    if config::is_studio() {
+        cmd.push_str(" -startEvent ");
+        cmd.push_str(&event);
+    }
 
-    // The client sets this once its window is up; until then ours stays.
-    let started = Owned(unsafe {
-        win::CreateEventW(core::ptr::null_mut(), 1, 0, wide(&config::started_event_name()).as_ptr())
-    });
+    let started = Owned(unsafe { win::CreateEventW(core::ptr::null_mut(), 1, 0, wide(&event).as_ptr()) });
 
     let process = spawn(&exe, &cmd, Some(dir))?;
     unsafe { win::AllowSetForegroundWindow(u32::MAX) };
@@ -242,7 +271,7 @@ impl Drop for Lock {
 }
 
 fn single_instance() -> Result<Lock> {
-    let mutex = Owned(unsafe { win::CreateMutexW(core::ptr::null_mut(), 0, wide("Better16Launcher").as_ptr()) });
+    let mutex = Owned(unsafe { win::CreateMutexW(core::ptr::null_mut(), 0, wide(product().update_name).as_ptr()) });
     if !mutex.is_valid() {
         return Err(Error::last_os("CreateMutex"));
     }
@@ -335,5 +364,9 @@ mod tests {
     #[test]
     fn tickets_stay_out_of_the_log() {
         assert_eq!(redact("better16://placeId=1&key=SECRET"), "better16://placeId=1&key=***");
+        assert_eq!(
+            redact("better16-studio://launchmode=build&gameinfo=SECRET&avatar=true"),
+            "better16-studio://launchmode=build&gameinfo=***&avatar=true"
+        );
     }
 }

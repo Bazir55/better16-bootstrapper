@@ -1,8 +1,8 @@
 [package]
 name = "better16-bootstrapper"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
-description = "Installs, updates and launches the Better16 player. Runs on everything from Windows XP up."
+description = "Installs, updates and launches the Better16 player and Better16 Studio. Runs on everything from Windows XP up."
 license = "MIT"
 repository = "https://github.com/Bazir55/better16-bootstrapper"
 publish = false
@@ -10,6 +10,11 @@ publish = false
 [[bin]]
 name = "Better16Launcher"
 path = "src/main.rs"
+test = false
+
+[[bin]]
+name = "Better16StudioLauncher"
+path = "src/main_studio.rs"
 test = false
 
 [dependencies]
