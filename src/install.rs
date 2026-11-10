@@ -146,9 +146,9 @@ pub fn ensure(http: &Session, version: &str, verify: bool) -> Result<String> {
     install_launcher(&root)?;
     register(&root, &dir, version, previous.is_none())?;
 
-    if needs_install {
-        remove_old_versions(&root, version);
-    }
+    // Every time, not only after an update: a folder a running client kept
+    // locked goes on the next start instead of waiting for the next build.
+    remove_old_versions(&root, version);
     Ok(dir)
 }
 
@@ -443,11 +443,51 @@ fn is_own_build(dir: &str) -> bool {
     }
 }
 
+/// What the old C++ launcher left of a version once it was done with it:
+/// the package's `.empty` placeholders and, at most, its own exe. No client
+/// of either product is in there, so `is_own_build` never matched these and
+/// they piled up, one per build.
+fn is_husk(dir: &str) -> bool {
+    fn walk(dir: &str, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        fs::read_dir(dir).iter().all(|e| {
+            if e.is_link {
+                false
+            } else if e.is_dir {
+                walk(&fs::join(dir, &e.name), depth + 1)
+            } else {
+                (depth > 0 && e.name == ".empty")
+                    || (depth == 0
+                        && ["RobloxPlayerLauncher.exe", "RobloxStudioLauncherBeta.exe", ".empty"]
+                            .iter()
+                            .any(|n| e.name.eq_ignore_ascii_case(n)))
+            }
+        })
+    }
+    walk(dir, 0)
+}
+
+/// Versions the registry names for either product. Studio may be in the
+/// middle of installing one that has nothing in it yet.
+fn registered_versions() -> [Option<String>; 2] {
+    [
+        reg::get_str(config::PLAYER.reg_key, "version"),
+        reg::get_str(config::STUDIO.reg_key, "version"),
+    ]
+}
+
 fn remove_old_versions(root: &str, keep: &str) {
     let versions = versions_dir(root);
+    let registered = registered_versions();
     for e in fs::read_dir(&versions) {
         let path = fs::join(&versions, &e.name);
-        if !e.is_dir || e.is_link || e.name.eq_ignore_ascii_case(keep) || !is_own_build(&path) {
+        if !e.is_dir || e.is_link || e.name.eq_ignore_ascii_case(keep) {
+            continue;
+        }
+        let husk = !registered.iter().flatten().any(|v| v.eq_ignore_ascii_case(&e.name)) && is_husk(&path);
+        if !husk && !is_own_build(&path) {
             continue;
         }
         // A client that's still running keeps its folder locked; it'll go
@@ -529,6 +569,29 @@ pub fn is_installed_launcher(exe: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn husks_are_told_apart_from_installs() {
+        let base = format!("{}b16-husk-test", fs::temp_dir());
+        let _ = fs::remove_dir_all(&base);
+        let mk = |name: &str, files: &[&str]| {
+            let dir = fs::join(&base, name);
+            for f in files {
+                let path = fs::join(&dir, f);
+                fs::create_dir_all(fs::parent(&path).unwrap()).unwrap();
+                fs::write(&path, b"").unwrap();
+            }
+            fs::create_dir_all(&dir).unwrap();
+            dir
+        };
+        assert!(is_husk(&mk("a", &["content\\textures\\.empty"])));
+        assert!(is_husk(&mk("b", &["content\\textures\\.empty", "imageformats\\.empty"])));
+        assert!(is_husk(&mk("c", &["RobloxStudioLauncherBeta.exe", "content\\textures\\.empty"])));
+        assert!(!is_husk(&mk("d", &["Better16PlayerBeta.exe", "content\\textures\\.empty"])));
+        assert!(!is_husk(&mk("e", &["content\\textures\\.empty", "content\\fonts\\a.ttf"])));
+        assert!(!is_husk(&mk("f", &["msvcr110.dll"])));
+        fs::remove_dir_all(&base).unwrap();
+    }
 
     // cargo test --lib -- --ignored
     #[test]
