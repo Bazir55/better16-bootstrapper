@@ -14,6 +14,7 @@ compile_error!("build for i686-pc-windows-msvc; the runtime shims in rt.rs are 3
 
 extern crate alloc;
 
+mod acl;
 mod app;
 mod config;
 mod error;

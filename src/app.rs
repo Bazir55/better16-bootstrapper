@@ -9,6 +9,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::acl;
 use crate::config::{self, product};
 use crate::error::{Error, Result};
 use crate::http::Session;
@@ -118,7 +119,7 @@ pub fn run() -> u32 {
         if install::is_installed_launcher(&me) {
             let copy = format!("{}{}Uninstall.exe", crate::fs::temp_dir(), product().update_name);
             let cmd = format!("{} -uninstall -quiet", quote(&copy));
-            let handed_off = crate::fs::copy(&me, &copy).and_then(|()| spawn(&copy, &cmd, None));
+            let handed_off = crate::fs::copy(&me, &copy).and_then(|()| spawn(&copy, &cmd, None, None));
             match handed_off {
                 Ok(_) => return 0,
                 Err(e) => log!("could not run the uninstaller from TEMP: {e}"),
@@ -203,7 +204,7 @@ fn work() -> Result<()> {
                 cmd.push_str(&quote(a));
             }
             cmd.push_str(" --no-self-update");
-            spawn(&exe, &cmd, None)?;
+            spawn(&exe, &cmd, None, None)?;
             return Ok(());
         }
     }
@@ -244,7 +245,9 @@ fn play(dir: &str, args: &str) -> Result<()> {
 
     let started = Owned(unsafe { win::CreateEventW(core::ptr::null_mut(), 1, 0, wide(&event).as_ptr()) });
 
-    let process = spawn(&exe, &cmd, Some(dir))?;
+    // Studio has no anti-cheat, and people attach debuggers and profilers to it.
+    let dacl = if config::is_studio() { None } else { acl::client_descriptor() };
+    let process = spawn(&exe, &cmd, Some(dir), dacl.as_ref())?;
     unsafe { win::AllowSetForegroundWindow(u32::MAX) };
 
     let handles = [started.0, process.0];
@@ -320,18 +323,23 @@ fn quote(arg: &str) -> String {
     out
 }
 
-fn spawn(exe: &str, cmd: &str, dir: Option<&str>) -> Result<Owned> {
-    log!("starting {exe}");
+fn spawn(exe: &str, cmd: &str, dir: Option<&str>, dacl: Option<&acl::Descriptor>) -> Result<Owned> {
+    log!("starting {exe}{}", if dacl.is_some() { " locked down" } else { "" });
     let mut si: win::StartupInfo = unsafe { core::mem::zeroed() };
     si.cb = core::mem::size_of::<win::StartupInfo>() as u32;
     let mut pi: win::ProcessInformation = unsafe { core::mem::zeroed() };
     let mut cmd: Vec<u16> = wide(cmd);
     let dir = dir.map(wide);
+    let mut sa = win::SecurityAttributes {
+        length: core::mem::size_of::<win::SecurityAttributes>() as u32,
+        descriptor: dacl.map_or(core::ptr::null_mut(), |d| d.as_ptr()),
+        inherit: 0,
+    };
     let ok = unsafe {
         win::CreateProcessW(
             wide(exe).as_ptr(),
             cmd.as_mut_ptr(),
-            core::ptr::null_mut(),
+            if dacl.is_some() { &mut sa } else { core::ptr::null_mut() },
             core::ptr::null_mut(),
             0,
             0,
