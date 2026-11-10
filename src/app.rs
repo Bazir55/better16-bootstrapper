@@ -235,7 +235,7 @@ fn play(dir: &str, args: &str) -> Result<()> {
     ui::status(&format!("Starting {}...", product().name));
 
     let event = config::started_event_name();
-    let exe = crate::fs::join(dir, product().app_exe);
+    let exe = install::app_path(product(), dir);
     let mut cmd = format!("{} {args}", quote(&exe));
     if config::is_studio() {
         cmd.push_str(" -startEvent ");

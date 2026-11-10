@@ -55,10 +55,20 @@ fn downloads_dir() -> String {
     }
 }
 
+/// The product's program in a version folder, under whichever name it has.
+pub fn app_path(p: &config::Product, dir: &str) -> String {
+    let legacy = fs::join(dir, p.legacy_app_exe);
+    if fs::exists(&legacy) && !fs::exists(&fs::join(dir, p.app_exe)) {
+        legacy
+    } else {
+        fs::join(dir, p.app_exe)
+    }
+}
+
 /// The version the registry says is installed, if its files are there.
 pub fn installed_version(root: &str) -> Option<String> {
     let version = reg::get_str(product().reg_key, "version")?;
-    let exe = fs::join(&version_dir(root, &version), product().app_exe);
+    let exe = app_path(product(), &version_dir(root, &version));
     fs::exists(&exe).then_some(version)
 }
 
@@ -425,11 +435,11 @@ fn create_shortcuts(launcher: &str, desktop: bool) -> Result<()> {
 }
 
 fn is_own_build(dir: &str) -> bool {
-    let studio = fs::exists(&fs::join(dir, config::STUDIO.app_exe));
+    let studio = fs::exists(&app_path(&config::STUDIO, dir));
     if config::is_studio() {
         studio
     } else {
-        fs::exists(&fs::join(dir, config::PLAYER.app_exe)) && !studio
+        fs::exists(&app_path(&config::PLAYER, dir)) && !studio
     }
 }
 

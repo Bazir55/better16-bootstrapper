@@ -31,6 +31,8 @@ pub struct Product {
     pub name: &'static str,
     pub launcher_exe: &'static str,
     pub app_exe: &'static str,
+    /// Its name in builds from before the rename.
+    pub legacy_app_exe: &'static str,
     pub version_file: &'static str,
     pub update_name: &'static str,
     /// The client reads this key to find its launcher and install host, so
@@ -50,7 +52,8 @@ pub struct Product {
 pub static PLAYER: Product = Product {
     name: "Better16",
     launcher_exe: "Better16Launcher.exe",
-    app_exe: "RobloxPlayerBeta.exe",
+    app_exe: "Better16PlayerBeta.exe",
+    legacy_app_exe: "RobloxPlayerBeta.exe",
     version_file: "version",
     update_name: "Better16Launcher",
     reg_key: "Software\\RobloxReg",
@@ -83,7 +86,8 @@ pub static PLAYER: Product = Product {
 pub static STUDIO: Product = Product {
     name: "Better16 Studio",
     launcher_exe: "Better16StudioLauncher.exe",
-    app_exe: "RobloxStudioBeta.exe",
+    app_exe: "Better16StudioBeta.exe",
+    legacy_app_exe: "RobloxStudioBeta.exe",
     version_file: "versionQTStudio",
     update_name: "Better16StudioLauncher",
     reg_key: "Software\\StudioQTRobloxReg",
