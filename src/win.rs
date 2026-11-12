@@ -140,6 +140,8 @@ import!("kernel32" {
     pub fn Sleep(ms: u32);
     pub fn GetLocalTime(t: *mut SystemTime);
     pub fn GetModuleHandleW(name: *const u16) -> Handle;
+    pub fn GetNativeSystemInfo(info: *mut SystemInfo);
+    pub fn GetVersion() -> u32;
     pub fn GetModuleFileNameW(module: Handle, buf: *mut u16, size: u32) -> u32;
     pub fn GetCommandLineW() -> *const u16;
     pub fn GetTempPathW(size: u32, buf: *mut u16) -> u32;
@@ -277,6 +279,34 @@ pub fn current_exe() -> String {
     from_wide(&buf[..n as usize])
 }
 
+#[repr(C)]
+pub struct SystemInfo {
+    pub processor_architecture: u16,
+    pub reserved: u16,
+    pub page_size: u32,
+    pub min_address: *mut c_void,
+    pub max_address: *mut c_void,
+    pub active_processor_mask: usize,
+    pub processors: u32,
+    pub processor_type: u32,
+    pub allocation_granularity: u32,
+    pub processor_level: u16,
+    pub processor_revision: u16,
+}
+
+const PROCESSOR_ARCHITECTURE_AMD64: u16 = 9;
+
+/// True on 64-bit x86 Windows Vista or later, which is what the x64 client needs (it is built
+/// with VS2012's v110, subsystem 6.0). The launcher itself is 32-bit, so this asks for the
+/// native architecture, not its own. ARM64 Windows gets the 32-bit client: Windows 10 on ARM
+/// cannot run x64 code at all.
+pub fn is_x64_windows() -> bool {
+    let mut info: SystemInfo = unsafe { core::mem::zeroed() };
+    unsafe { GetNativeSystemInfo(&mut info) };
+    let major = unsafe { GetVersion() } & 0xff;
+    info.processor_architecture == PROCESSOR_ARCHITECTURE_AMD64 && major >= 6
+}
+
 /// Command line arguments, without the program name.
 pub fn args() -> Vec<String> {
     let mut argc = 0;
@@ -301,5 +331,7 @@ mod tests {
         assert_eq!(core::mem::size_of::<super::FindData>(), 592);
         assert_eq!(core::mem::size_of::<super::StartupInfo>(), 68);
         assert_eq!(core::mem::size_of::<super::SystemTime>(), 16);
+        #[cfg(target_arch = "x86")]
+        assert_eq!(core::mem::size_of::<super::SystemInfo>(), 36);
     }
 }

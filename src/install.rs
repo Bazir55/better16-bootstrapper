@@ -72,9 +72,29 @@ pub fn installed_version(root: &str) -> Option<String> {
     fs::exists(&exe).then_some(version)
 }
 
+/// The x64 build when this is 64-bit Windows and the server has one (`version-x64`,
+/// `versionQTStudio-x64`), otherwise the 32-bit one. A server without the x64 file answers 404
+/// and everybody keeps the 32-bit build, so the launcher can ship before the channel exists.
+/// `Architecture`=`x86` under the product's registry key pins the 32-bit build on a 64-bit system.
 pub fn latest_version(http: &Session) -> Result<String> {
-    let version = http.get_string(&format!("{SETUP_URL}/{}", product().version_file))?;
-    let version = version.trim();
+    let p = product();
+    let pinned_x86 = reg::get_str(p.reg_key, "Architecture").is_some_and(|a| a.eq_ignore_ascii_case("x86"));
+    if crate::win::is_x64_windows() && !pinned_x86 {
+        match http.get_string(&format!("{SETUP_URL}/{}-x64", p.version_file)) {
+            Ok(version) => {
+                let version = checked_version(version.trim())?;
+                log!("64-bit Windows: x64 build {version}");
+                return Ok(version);
+            }
+            Err(Error::NotFound(_)) => log!("64-bit Windows, but the server has no x64 build: using the 32-bit one"),
+            Err(e) => return Err(e),
+        }
+    }
+    let version = http.get_string(&format!("{SETUP_URL}/{}", p.version_file))?;
+    checked_version(version.trim())
+}
+
+fn checked_version(version: &str) -> Result<String> {
     // It becomes a folder name and part of every URL, so be picky.
     let valid = version.starts_with("version-")
         && version.len() <= 64
