@@ -217,6 +217,8 @@ fn work() -> Result<()> {
 
     match &start {
         Some(a) => play(&dir, a),
+        // The player's own shortcut opens the Windows 10 app, as Roblox's did.
+        None if !config::is_studio() => play(&dir, "--uwp"),
         // Fresh install from the downloaded exe: say so and point at the
         // site's Play buttons. Otherwise just take them to the site.
         None if first_install => {

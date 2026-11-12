@@ -78,6 +78,8 @@ pub static PLAYER: Product = Product {
         ("content-textures2.zip", "content\\textures"),
         ("content-textures3.zip", "PlatformContent\\pc\\textures"),
         ("content-terrain.zip", "PlatformContent\\pc\\terrain"),
+        ("content-uwpapp.zip", "content\\uwpapp"),
+        ("content-places.zip", "content\\places"),
         ("shaders.zip", "shaders"),
     ],
     space_needed: 700 * 1024 * 1024,
